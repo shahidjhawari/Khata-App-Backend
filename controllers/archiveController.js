@@ -33,6 +33,8 @@ const createArchive = asyncHandler(async (req, res) => {
       user: m.userId,
       userName: m.name,
       share: m.share,
+      totalPaid: m.totalPaid,
+      balanceDue: m.balanceDue,
     })),
     archivedBy: req.user._id,
   });

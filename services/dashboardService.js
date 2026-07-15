@@ -1,6 +1,7 @@
 const Expense = require('../models/Expense');
 const Category = require('../models/Category');
 const User = require('../models/User');
+const Payment = require('../models/Payment');
 
 /**
  * Returns start/end of "today" and "this month" as Date objects (server local time).
@@ -90,19 +91,38 @@ const getDashboardSummary = async () => {
   const activeMembers = await User.find({ isActive: true }).select('name email');
   const memberCount = activeMembers.length;
   const perMemberShare = memberCount > 0 ? grandTotal / memberCount : 0;
+  const roundedShare = Math.round(perMemberShare * 100) / 100;
 
-  const memberShares = activeMembers.map((m) => ({
-    userId: m._id,
-    name: m.name,
-    email: m.email,
-    share: Math.round(perMemberShare * 100) / 100,
-  }));
+  // Sum payments already made by each active member, so we can show
+  // how much of their share is still due (or overpaid).
+  const paymentTotals = await Payment.aggregate([
+    { $match: { user: { $in: activeMembers.map((m) => m._id) } } },
+    { $group: { _id: '$user', totalPaid: { $sum: '$amount' } } },
+  ]);
+  const paidMap = {};
+  paymentTotals.forEach((p) => {
+    paidMap[p._id.toString()] = p.totalPaid;
+  });
+
+  const memberShares = activeMembers.map((m) => {
+    const totalPaid = Math.round((paidMap[m._id.toString()] || 0) * 100) / 100;
+    const balanceDue = Math.round((roundedShare - totalPaid) * 100) / 100;
+    return {
+      userId: m._id,
+      name: m.name,
+      email: m.email,
+      share: roundedShare,
+      totalPaid,
+      // Positive = still owes this amount, Negative = has overpaid (credit)
+      balanceDue,
+    };
+  });
 
   return {
     grandTotal: Math.round(grandTotal * 100) / 100,
     categoryTotals,
     activeMemberCount: memberCount,
-    perMemberShare: Math.round(perMemberShare * 100) / 100,
+    perMemberShare: roundedShare,
     memberShares,
   };
 };

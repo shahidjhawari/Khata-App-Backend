@@ -49,22 +49,14 @@ For MongoDB Atlas, use your connection string instead:
 `mongodb+srv://<user>:<password>@cluster0.mongodb.net/expense_manager`
 
 ### 3. Create the first Admin user
-There's no public signup route (by design). Create the first admin directly in MongoDB, e.g. via `mongosh`:
-```js
-use expense_manager
-db.users.insertOne({
-  name: "Admin",
-  email: "admin@example.com",
-  // password below is bcrypt hash of "admin123" - generate your own with bcryptjs
-  password: "$2a$10$examplehashreplacewithrealone",
-  role: "admin",
-  isActive: true,
-  createdAt: new Date(),
-  updatedAt: new Date()
-})
+Use the public signup route — **no manual DB insert needed**:
 ```
-Or simpler: temporarily add a throwaway script that calls `User.create({...})` with a plain password (the pre-save hook hashes it automatically), run it once, then delete it.
-Once you have one admin, use `POST /api/auth/register` (admin-only) to create all other members.
+POST /api/auth/signup
+{ "name": "Admin", "email": "admin@admin.com", "password": "admin123" }
+```
+**Special rule:** signing up with the exact email `admin@admin.com` automatically creates that account with `role: "admin"`. Any other email signs up as a regular `role: "member"`.
+
+Once you have an admin account, you can either let other members self-signup via `/api/auth/signup` (they'll get `role: "member"`), or the admin can create them via `POST /api/auth/register`.
 
 ### 4. Run the server
 ```bash
@@ -86,8 +78,9 @@ All protected routes require header: `Authorization: Bearer <token>`
 ### Auth
 | Method | Route | Access | Body |
 |---|---|---|---|
+| POST | /api/auth/signup | Public | `{ name, email, password }` → `admin@admin.com` auto-becomes `role: "admin"`, everyone else becomes `role: "member"` |
 | POST | /api/auth/login | Public | `{ email, password }` |
-| POST | /api/auth/register | Admin | `{ name, email, password, role }` |
+| POST | /api/auth/register | Admin | `{ name, email, password, role }` - admin manually creates a member/admin |
 | GET | /api/auth/me | Private | - |
 
 ### Categories
@@ -129,7 +122,31 @@ All protected routes require header: `Authorization: Bearer <token>`
 ### Reports (Dashboard)
 | Method | Route | Access | Notes |
 |---|---|---|---|
-| GET | /api/reports | Private | Returns `grandTotal`, `categoryTotals[]`, `activeMemberCount`, `perMemberShare`, `memberShares[]`. Recalculated live on every call. |
+| GET | /api/reports | Private | Recalculated **live** on every call (no caching). Returns: |
+
+```json
+{
+  "grandTotal": 43800,
+  "categoryTotals": [
+    { "categoryId": "...", "categoryName": "Grocery", "dailyTotal": 500, "monthlyTotal": 12000, "overallTotal": 12000 }
+  ],
+  "activeMemberCount": 4,
+  "perMemberShare": 10950,
+  "memberShares": [
+    {
+      "userId": "...",
+      "name": "Ali",
+      "email": "ali@example.com",
+      "share": 10950,
+      "totalPaid": 8000,
+      "balanceDue": 2950
+    }
+  ]
+}
+```
+- `share` = grandTotal ÷ activeMemberCount
+- `totalPaid` = sum of that member's entries in `payments` collection
+- `balanceDue` = `share - totalPaid` → **positive = still owes this amount, negative = has overpaid / in credit**
 
 ### Archive
 | Method | Route | Access | Body |
@@ -147,11 +164,16 @@ All protected routes require header: `Authorization: Bearer <token>`
 ---
 
 ## Business Rules Implemented
+- **Signup rule:** `POST /api/auth/signup` with email exactly `admin@admin.com` → account created with `role: "admin"`. Any other email → `role: "member"`. No manual DB seeding required.
 - Category **cannot be deleted** if any expense exists under it (`400 Bad Request`).
 - Disabling a category (`isActive: false`) blocks new expenses from being added to it, but keeps historical data intact.
-- **Grand Total** = sum of `overallTotal` across all active categories.
-- Grand Total is divided equally among all users where `isActive: true` — this happens live inside `GET /api/reports`, so it always reflects the current state (no caching), satisfying the "instantly recalculates" requirement.
+- **Grand Total** = sum of `overallTotal` across all active categories (Personal Expenses are intentionally excluded — they're individual, not shared/household expenses).
+- **Per Person Division** = Grand Total ÷ count of users where `isActive: true`. Recalculated live on every `GET /api/reports` call — no caching, no stored/stale totals.
+- **Payments → Balance:** each member's `totalPaid` (sum of their `payments` documents) is subtracted from their `share` to produce `balanceDue` (positive = owes, negative = overpaid), also computed live.
+- **Personal Expenses** are scoped per member (a member sees only their own; admin sees everyone's) and never affect the shared Grand Total.
+- **Monthly Archive** (`POST /api/archive`) takes a point-in-time snapshot of the current Grand Total, every category's total, and every member's share/paid/balanceDue — so historical months stay fixed even as new expenses are added later.
 - Expenses are grouped by date with a daily total when fetching a single category (`GET /api/categories/:id`).
+- **Instant recalculation:** because nothing is cached, adding/editing/deleting any Expense, Category, Payment, or Member is reflected on the very next `GET /api/reports` (or `GET /api/categories`) call — no restart or manual refresh trigger needed.
 
 ## HTTP Status Codes Used
 `200` OK · `201` Created · `400` Bad Request · `401` Unauthorized · `403` Forbidden · `404` Not Found · `500` Internal Server Error

@@ -42,6 +42,54 @@ const login = asyncHandler(async (req, res) => {
   });
 });
 
+// @desc    Public signup. If the email is admin@admin.com, the account is
+//          automatically created with role "admin". Everyone else signs up
+//          as a regular "member".
+// @route   POST /api/auth/signup
+// @access  Public
+const signup = asyncHandler(async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return sendResponse(res, 400, false, 'Name, email and password are required');
+  }
+
+  if (password.length < 6) {
+    return sendResponse(res, 400, false, 'Password must be at least 6 characters');
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  const existing = await User.findOne({ email: normalizedEmail });
+  if (existing) {
+    return sendResponse(res, 400, false, 'A user with this email already exists');
+  }
+
+  // Special rule: this exact email is always granted admin rights on signup.
+  const role = normalizedEmail === 'admin@admin.com' ? 'admin' : 'member';
+
+  const user = await User.create({
+    name,
+    email: normalizedEmail,
+    password,
+    role,
+    isActive: true,
+  });
+
+  const token = generateToken(user._id, user.role);
+
+  return sendResponse(res, 201, true, 'Signup successful', {
+    token,
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      isActive: user.isActive,
+    },
+  });
+});
+
 // @desc    Register a member (admin creates members) - bonus endpoint
 // @route   POST /api/auth/register
 // @access  Private/Admin
@@ -80,4 +128,4 @@ const getMe = asyncHandler(async (req, res) => {
   return sendResponse(res, 200, true, 'Profile fetched', req.user);
 });
 
-module.exports = { login, register, getMe };
+module.exports = { login, signup, register, getMe };

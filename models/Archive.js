@@ -26,6 +26,8 @@ const archiveSchema = new mongoose.Schema(
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         userName: String,
         share: Number,
+        totalPaid: Number,
+        balanceDue: Number,
       },
     ],
     archivedBy: {
