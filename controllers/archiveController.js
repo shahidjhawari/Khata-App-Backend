@@ -28,6 +28,9 @@ const createArchive = asyncHandler(async (req, res) => {
       category: c.categoryId,
       categoryName: c.categoryName,
       total: c.overallTotal,
+      personalDeduction: c.personalDeduction,
+      netTotal: c.netOverallTotal,
+      perMemberShare: c.perMemberShare,
     })),
     memberShares: summary.memberShares.map((m) => ({
       user: m.userId,

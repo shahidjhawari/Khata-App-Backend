@@ -2,6 +2,40 @@ const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
 const { sendResponse } = require('../utils/apiResponse');
 
+// @desc    Admin adds a new member directly
+// @route   POST /api/users
+// @access  Private/Admin
+const createMember = asyncHandler(async (req, res) => {
+  const { name, email, password, role } = req.body;
+
+  if (!name || !email || !password) {
+    return sendResponse(res, 400, false, 'Name, email and password are required');
+  }
+
+  if (password.length < 6) {
+    return sendResponse(res, 400, false, 'Password must be at least 6 characters');
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  const existing = await User.findOne({ email: normalizedEmail });
+  if (existing) {
+    return sendResponse(res, 400, false, 'A user with this email already exists');
+  }
+
+  const user = await User.create({
+    name,
+    email: normalizedEmail,
+    password,
+    role: role === 'admin' ? 'admin' : 'member',
+    isActive: true,
+  });
+
+  const { password: _pw, ...safeUser } = user.toObject();
+
+  return sendResponse(res, 201, true, 'Member added successfully', safeUser);
+});
+
 // @desc    Get all members
 // @route   GET /api/users
 // @access  Private/Admin
@@ -45,4 +79,4 @@ const deleteUser = asyncHandler(async (req, res) => {
   return sendResponse(res, 200, true, 'Member removed');
 });
 
-module.exports = { getUsers, updateUser, deleteUser };
+module.exports = { createMember, getUsers, updateUser, deleteUser };

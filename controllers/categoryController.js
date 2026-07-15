@@ -1,18 +1,49 @@
 const asyncHandler = require('express-async-handler');
 const Category = require('../models/Category');
 const Expense = require('../models/Expense');
+const User = require('../models/User');
 const { sendResponse } = require('../utils/apiResponse');
-const { getCategoryTotals, getExpensesGroupedByDate } = require('../services/dashboardService');
+const {
+  getCategoryTotals,
+  getCategoryPersonalDeductions,
+  getExpensesGroupedByDate,
+} = require('../services/dashboardService');
+
+// Builds the full totals block for one category: raw totals, personal-expense
+// deduction, net totals, and the equal per-member split of the net overall total.
+const buildCategoryTotalsBlock = async (categoryId, memberCount) => {
+  const totals = await getCategoryTotals(categoryId);
+  const deductions = await getCategoryPersonalDeductions(categoryId);
+
+  const netDailyTotal = Math.max(0, totals.dailyTotal - deductions.dailyDeduction);
+  const netMonthlyTotal = Math.max(0, totals.monthlyTotal - deductions.monthlyDeduction);
+  const netOverallTotal = Math.max(0, totals.overallTotal - deductions.overallDeduction);
+
+  const perMemberShare =
+    memberCount > 0 ? Math.round((netOverallTotal / memberCount) * 100) / 100 : 0;
+
+  return {
+    dailyTotal: totals.dailyTotal,
+    monthlyTotal: totals.monthlyTotal,
+    overallTotal: totals.overallTotal,
+    personalDeduction: deductions.overallDeduction,
+    netDailyTotal,
+    netMonthlyTotal,
+    netOverallTotal,
+    perMemberShare,
+  };
+};
 
 // @desc    Get all categories (with live totals)
 // @route   GET /api/categories
 // @access  Private
 const getCategories = asyncHandler(async (req, res) => {
   const categories = await Category.find().sort({ createdAt: -1 });
+  const memberCount = await User.countDocuments({ isActive: true });
 
   const withTotals = await Promise.all(
     categories.map(async (cat) => {
-      const totals = await getCategoryTotals(cat._id);
+      const totals = await buildCategoryTotalsBlock(cat._id, memberCount);
       return {
         _id: cat._id,
         name: cat.name,
@@ -35,7 +66,8 @@ const getCategoryById = asyncHandler(async (req, res) => {
     return sendResponse(res, 404, false, 'Category not found');
   }
 
-  const totals = await getCategoryTotals(category._id);
+  const memberCount = await User.countDocuments({ isActive: true });
+  const totals = await buildCategoryTotalsBlock(category._id, memberCount);
   const groupedExpenses = await getExpensesGroupedByDate(category._id);
 
   return sendResponse(res, 200, true, 'Category fetched', {

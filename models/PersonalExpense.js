@@ -7,6 +7,14 @@ const personalExpenseSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    // Optional: if this personal expense belongs to a shared category
+    // (e.g. member personally covered part of the Grocery bill), it is
+    // subtracted from that category's shared total before splitting.
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Category',
+      default: null,
+    },
     date: {
       type: Date,
       required: true,

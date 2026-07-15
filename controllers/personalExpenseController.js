@@ -10,6 +10,7 @@ const getPersonalExpenses = asyncHandler(async (req, res) => {
 
   const expenses = await PersonalExpense.find(filter)
     .populate('user', 'name email')
+    .populate('category', 'name')
     .sort({ date: -1, createdAt: -1 });
 
   return sendResponse(res, 200, true, 'Personal expenses fetched', expenses);
@@ -19,7 +20,9 @@ const getPersonalExpenses = asyncHandler(async (req, res) => {
 // @route   GET /api/personal-expenses/:id
 // @access  Private
 const getPersonalExpenseById = asyncHandler(async (req, res) => {
-  const expense = await PersonalExpense.findById(req.params.id).populate('user', 'name email');
+  const expense = await PersonalExpense.findById(req.params.id)
+    .populate('user', 'name email')
+    .populate('category', 'name');
   if (!expense) {
     return sendResponse(res, 404, false, 'Personal expense not found');
   }
@@ -35,7 +38,7 @@ const getPersonalExpenseById = asyncHandler(async (req, res) => {
 // @route   POST /api/personal-expenses
 // @access  Private
 const createPersonalExpense = asyncHandler(async (req, res) => {
-  const { date, itemName, quantity, price, notes } = req.body;
+  const { date, itemName, quantity, price, notes, category } = req.body;
 
   if (!date || !itemName || price === undefined) {
     return sendResponse(res, 400, false, 'date, itemName and price are required');
@@ -43,6 +46,7 @@ const createPersonalExpense = asyncHandler(async (req, res) => {
 
   const expense = await PersonalExpense.create({
     user: req.user._id,
+    category: category || null,
     date,
     itemName,
     quantity: quantity || null,
@@ -66,13 +70,14 @@ const updatePersonalExpense = asyncHandler(async (req, res) => {
     return sendResponse(res, 403, false, 'Access denied');
   }
 
-  const { date, itemName, quantity, price, notes } = req.body;
+  const { date, itemName, quantity, price, notes, category } = req.body;
 
   if (date !== undefined) expense.date = date;
   if (itemName !== undefined) expense.itemName = itemName;
   if (quantity !== undefined) expense.quantity = quantity;
   if (price !== undefined) expense.price = price;
   if (notes !== undefined) expense.notes = notes;
+  if (category !== undefined) expense.category = category || null;
 
   await expense.save();
 
