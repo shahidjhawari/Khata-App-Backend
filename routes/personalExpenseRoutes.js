@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const {
+  getPersonalExpenseSummary,
   getPersonalExpenses,
   getPersonalExpenseById,
   createPersonalExpense,
@@ -8,6 +9,9 @@ const {
   deletePersonalExpense,
 } = require('../controllers/personalExpenseController');
 const { protect } = require('../middleware/authMiddleware');
+
+// Must come before /:id so "summary" isn't treated as an :id param
+router.get('/summary', protect, getPersonalExpenseSummary);
 
 router.route('/').get(protect, getPersonalExpenses).post(protect, createPersonalExpense);
 

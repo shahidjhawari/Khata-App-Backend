@@ -111,9 +111,10 @@ All protected routes require header: `Authorization: Bearer <token>`
 ### Personal Expenses
 | Method | Route | Access | Body |
 |---|---|---|---|
-| GET | /api/personal-expenses | Private | - (member sees own, admin sees all) |
+| GET | /api/personal-expenses/summary | Private | Admin: list of all active members with their `dailyTotal`/`monthlyTotal`/`overallTotal` for personal expenses — **use this to power the "Personal Expense" entry screen (tap a member to add their expense)**. Member: sees only their own totals in the same shape. |
+| GET | /api/personal-expenses?user=&lt;id&gt; | Private | Admin: list one member's personal expenses (after tapping them from the summary list). Member: always scoped to self, `?user=` is ignored. |
 | GET | /api/personal-expenses/:id | Private | - |
-| POST | /api/personal-expenses | Private | `{ date, itemName, quantity?, price, notes?, category? }` - if `category` is set, this amount is subtracted from that category's shared total before splitting |
+| POST | /api/personal-expenses | Private | `{ date, itemName, quantity?, price, notes?, category?, user? }` — `user` is **admin-only**: set it to add this expense on behalf of a specific member (e.g. after tapping them in the list). Omit `user` (or if you're a regular member) to add it for yourself. |
 | PUT | /api/personal-expenses/:id | Private | - |
 | DELETE | /api/personal-expenses/:id | Private | - |
 
