@@ -58,7 +58,14 @@ POST /api/auth/signup
 
 Once you have an admin account, you can either let other members self-signup via `/api/auth/signup` (they'll get `role: "member"`), or the admin can create them via `POST /api/auth/register`.
 
-### 4. Run the server
+### 4. Create default categories (Dukaan, Roti)
+Run the seed script once — it creates "Dukaan" and "Roti" categories automatically (safe to re-run, skips ones that already exist):
+```bash
+node seed.js
+```
+Admin can always add more categories later from the app (unlimited custom categories are supported).
+
+### 5. Run the server
 ```bash
 npm run dev     # with nodemon (auto-reload)
 npm start       # production
