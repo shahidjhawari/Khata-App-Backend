@@ -93,10 +93,12 @@ All protected routes require header: `Authorization: Bearer <token>`
 ### Categories
 | Method | Route | Access | Body |
 |---|---|---|---|
-| GET | /api/categories | Private | - each category includes raw totals AND net totals (after personal-expense deduction) AND `perMemberShare` (that category's net total ÷ active members) |
+| GET | /api/categories | Private | - each category includes raw totals, net totals (after personal-expense deduction), `perMemberShare` (net total ÷ **included** members only), plus `includedMembers`/`excludedMembers` name lists |
 | GET | /api/categories/:id | Private | - same totals + expenses grouped by date |
 | POST | /api/categories | Admin | `{ name }` |
 | PUT | /api/categories/:id | Admin | `{ name?, isActive? }` (rename and/or enable-disable) |
+| PUT | /api/categories/:id/exclude-member | Admin | `{ userId }` - remove this member from this category's split (e.g. someone who doesn't eat Roti) |
+| PUT | /api/categories/:id/include-member | Admin | `{ userId }` - add a previously-excluded member back in |
 | DELETE | /api/categories/:id | Admin | - (blocked with 400 if expenses exist) |
 
 ### Expenses
@@ -134,41 +136,48 @@ All protected routes require header: `Authorization: Bearer <token>`
 
 ```json
 {
-  "grandTotal": 43800,
+  "grandTotal": 44300,
+  "sharedCategoryTotal": 43800,
+  "grandPersonalTotal": 500,
   "categoryTotals": [
     {
       "categoryId": "...",
-      "categoryName": "Grocery",
-      "dailyTotal": 500,
-      "monthlyTotal": 12000,
-      "overallTotal": 12000,
-      "personalDeduction": 800,
-      "netDailyTotal": 500,
-      "netMonthlyTotal": 11200,
-      "netOverallTotal": 11200,
-      "perMemberShare": 2800
+      "categoryName": "Roti",
+      "dailyTotal": 100,
+      "monthlyTotal": 2000,
+      "overallTotal": 2000,
+      "personalDeduction": 0,
+      "netDailyTotal": 100,
+      "netMonthlyTotal": 2000,
+      "netOverallTotal": 2000,
+      "perMemberShare": 666.67,
+      "includedMembers": [{ "userId": "...", "name": "Ali" }, { "userId": "...", "name": "Umar" }],
+      "excludedMembers": [{ "userId": "...", "name": "Basit" }]
     }
   ],
-  "activeMemberCount": 4,
-  "perMemberShare": 10950,
+  "activeMemberCount": 3,
   "memberShares": [
     {
       "userId": "...",
       "name": "Ali",
       "email": "ali@example.com",
-      "share": 10950,
+      "categoryShare": 10950,
+      "personalTotal": 500,
+      "share": 11450,
       "totalPaid": 8000,
-      "balanceDue": 2950
+      "balanceDue": 3450
     }
   ]
 }
 ```
 - `overallTotal` = raw sum of all expenses ever added to this category
-- `personalDeduction` = sum of personal expenses tagged to this category (already paid for by an individual member)
-- `netOverallTotal` = `overallTotal - personalDeduction` → this is the amount actually shared
-- `perMemberShare` (inside `categoryTotals`) = that category's `netOverallTotal` ÷ `activeMemberCount` — **each category is individually divided among all active members**
-- Top-level `grandTotal` = sum of every category's `netOverallTotal`
-- Top-level `perMemberShare` = `grandTotal ÷ activeMemberCount`
+- `personalDeduction` = sum of personal expenses tagged to this category (already paid for by an individual member) — subtracted before splitting
+- `netOverallTotal` = `overallTotal - personalDeduction` → the amount actually shared
+- **Per-category member exclusion:** each category has its own `includedMembers`/`excludedMembers`. `perMemberShare` = `netOverallTotal ÷ includedMembers.length` — e.g. if Basit is excluded from "Roti" (doesn't eat it), Roti's total is divided only between Ali and Umar, not Basit.
+- `sharedCategoryTotal` = sum of every category's `netOverallTotal` (the pool that actually gets divided)
+- `grandPersonalTotal` = sum of every personal expense from every member (never divided — always attributed 100% to whoever spent it)
+- Top-level `grandTotal` = `sharedCategoryTotal + grandPersonalTotal` — the full picture of everything the household has spent
+- Per member: `categoryShare` = sum of that member's `perMemberShare` across every category they're included in; `personalTotal` = that member's own personal expenses (added in full, not divided); `share` = `categoryShare + personalTotal` = what they owe in total
 - `totalPaid` = sum of that member's entries in `payments` collection
 - `balanceDue` = `share - totalPaid` → **positive = still owes this amount, negative = has overpaid / in credit**
 
@@ -193,15 +202,14 @@ All protected routes require header: `Authorization: Bearer <token>`
 - **Admin can add members directly:** `POST /api/users` (admin-only) creates a member account instantly — no signup flow needed for them.
 - Category **cannot be deleted** if any expense exists under it (`400 Bad Request`).
 - Disabling a category (`isActive: false`) blocks new expenses from being added to it, but keeps historical data intact.
-- **Every category is individually divided among active members:** each category's `netOverallTotal` ÷ `activeMemberCount` = that category's `perMemberShare`.
-- **Personal expenses reduce their linked category's total:** if a `PersonalExpense` has a `category` set, its amount is subtracted from that category's daily/monthly/overall totals (down to a floor of 0) before the category is split — since that portion was already covered personally by one member, it shouldn't be shared by everyone.
-- **Grand Total** = sum of `netOverallTotal` (i.e. already net of personal-expense deductions) across all active categories.
-- **Per Person Division** = Grand Total ÷ count of users where `isActive: true`. Recalculated live on every `GET /api/reports` / `GET /api/categories` call — no caching, no stored/stale totals.
+- **Per-category member exclusion:** admin can remove any specific member from any specific category's split (`PUT /api/categories/:id/exclude-member`) — e.g. a member who doesn't eat Roti can be excluded from the Roti category only, while still being included in Grocery, Rent, etc. That category's `perMemberShare` then divides only among the remaining included members.
+- **Personal expenses reduce their linked category's shared total**, but are then **added back in full to that member's own total** (not divided): if a `PersonalExpense` has a `category` set, its amount is subtracted from that category's totals (down to a floor of 0) before the remaining amount is split among included members — since that member already personally covered this portion. That same amount is then counted fully toward that member's own `personalTotal` (and into the overall `grandTotal`), so it isn't lost — it just isn't shared by everyone else.
+- **Grand Total** = `sharedCategoryTotal` (sum of every category's net, shared total) + `grandPersonalTotal` (sum of every personal expense from every member) — a complete picture of everything the household has spent.
+- **Per Person amount owed** = `categoryShare` (sum of their per-category shares, respecting exclusions) + `personalTotal` (their own personal expenses, in full). Recalculated live on every `GET /api/reports` / `GET /api/categories` call — no caching, no stored/stale totals.
 - **Payments → Balance:** each member's `totalPaid` (sum of their `payments` documents) is subtracted from their `share` to produce `balanceDue` (positive = owes, negative = overpaid), also computed live.
-- **Personal Expenses not linked to a category** are scoped purely per member (a member sees only their own; admin sees everyone's) and never affect any shared total.
-- **Monthly Archive** (`POST /api/archive`) takes a point-in-time snapshot of the current Grand Total, every category's raw/net total, personal deduction, per-category share, and every member's share/paid/balanceDue — so historical months stay fixed even as new expenses are added later.
-- Expenses are grouped by date with a daily total when fetching a single category (`GET /api/categories/:id`).
-- **Instant recalculation:** because nothing is cached, adding/editing/deleting any Expense, Category, Personal Expense, Payment, or Member is reflected on the very next `GET /api/reports` (or `GET /api/categories`) call — no restart or manual refresh trigger needed.
+- **Monthly Archive** (`POST /api/archive`) takes a point-in-time snapshot of the current Grand Total, every category's raw/net total with included/excluded member names, and every member's category share + personal total + balance — so historical months stay fixed even as new expenses are added later.
+- Expenses are grouped by date with a daily total when fetching a single category (`GET /api/categories/:id`) — each new expense added appears in the date's item list, building a running history, with dates sorted newest-first.
+- **Instant recalculation:** because nothing is cached, adding/editing/deleting any Expense, Category, Personal Expense, Payment, Member, or category member exclusion is reflected on the very next `GET /api/reports` (or `GET /api/categories`) call — no restart or manual refresh trigger needed.
 
 ## HTTP Status Codes Used
 `200` OK · `201` Created · `400` Bad Request · `401` Unauthorized · `403` Forbidden · `404` Not Found · `500` Internal Server Error

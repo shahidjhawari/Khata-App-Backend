@@ -16,6 +16,14 @@ const categorySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
     },
+    // Members explicitly excluded from this category's split.
+    // Everyone else who is an active member is included by default.
+    excludedMembers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
   },
   { timestamps: true }
 );

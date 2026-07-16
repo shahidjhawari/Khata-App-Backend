@@ -14,20 +14,26 @@ const archiveSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    sharedCategoryTotal: Number,
+    grandPersonalTotal: Number,
     categoryTotals: [
       {
         category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
         categoryName: String,
         total: Number, // raw overall total before deduction
         personalDeduction: Number,
-        netTotal: Number, // total actually split among members
+        netTotal: Number, // total actually split among included members
         perMemberShare: Number,
+        includedMemberNames: [String],
+        excludedMemberNames: [String],
       },
     ],
     memberShares: [
       {
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         userName: String,
+        categoryShare: Number,
+        personalTotal: Number,
         share: Number,
         totalPaid: Number,
         balanceDue: Number,

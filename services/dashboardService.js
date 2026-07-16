@@ -98,17 +98,35 @@ const getExpensesGroupedByDate = async (categoryId) => {
 };
 
 /**
- * Grand Total = sum of NET totals (category total minus personal expenses
- * tagged to that category) across ALL active categories.
- * Each category's net total is ALSO divided equally among active members
- * (categorySplit), in addition to the overall grand-total split.
- * Divided equally among all ACTIVE members.
+ * Given a category document and the full list of active members, returns
+ * only the members who are NOT excluded from this category's split.
+ */
+const getIncludedMembersForCategory = (category, activeMembers) => {
+  const excludedIds = new Set((category.excludedMembers || []).map((id) => id.toString()));
+  return activeMembers.filter((m) => !excludedIds.has(m._id.toString()));
+};
+
+/**
+ * Grand Total = (sum of NET category totals that get shared/split) +
+ *               (sum of ALL personal expenses, across every member).
+ * - Each category's net total is divided ONLY among the members who are NOT
+ *   excluded from that category (excludedMembers on the Category doc).
+ * - Personal expenses are NEVER divided among others - the amount is added
+ *   entirely to the member who spent it, both in their own "share" total
+ *   and in the overall Grand Total (so Grand Total reflects everything the
+ *   household has actually spent, shared + personal combined).
  * This is recalculated live on every call - always reflects current DB state.
  */
 const getDashboardSummary = async () => {
   const categories = await Category.find({ isActive: true });
   const activeMembers = await User.find({ isActive: true }).select('name email');
   const memberCount = activeMembers.length;
+
+  // Running per-member totals, built up as we go through each category below.
+  const categoryShareByMember = {};
+  activeMembers.forEach((m) => {
+    categoryShareByMember[m._id.toString()] = 0;
+  });
 
   const categoryTotals = await Promise.all(
     categories.map(async (cat) => {
@@ -121,8 +139,20 @@ const getDashboardSummary = async () => {
       const netMonthlyTotal = Math.max(0, totals.monthlyTotal - deductions.monthlyDeduction);
       const netOverallTotal = Math.max(0, totals.overallTotal - deductions.overallDeduction);
 
+      const includedMembers = getIncludedMembersForCategory(cat, activeMembers);
+      const excludedMembers = activeMembers.filter(
+        (m) => !includedMembers.some((im) => im._id.toString() === m._id.toString())
+      );
+
       const perMemberShare =
-        memberCount > 0 ? Math.round((netOverallTotal / memberCount) * 100) / 100 : 0;
+        includedMembers.length > 0
+          ? Math.round((netOverallTotal / includedMembers.length) * 100) / 100
+          : 0;
+
+      // Accumulate this category's share into each included member's running total
+      includedMembers.forEach((m) => {
+        categoryShareByMember[m._id.toString()] += perMemberShare;
+      });
 
       return {
         categoryId: cat._id,
@@ -133,20 +163,34 @@ const getDashboardSummary = async () => {
         overallTotal: totals.overallTotal,
         // How much of this category was already personally covered
         personalDeduction: deductions.overallDeduction,
-        // What's actually left to split among members
+        // What's actually left to split among included members
         netDailyTotal,
         netMonthlyTotal,
         netOverallTotal,
-        // This category's overall net total, split equally among active members
+        // This category's net total, split equally among INCLUDED members only
         perMemberShare,
+        includedMembers: includedMembers.map((m) => ({ userId: m._id, name: m.name })),
+        excludedMembers: excludedMembers.map((m) => ({ userId: m._id, name: m.name })),
       };
     })
   );
 
-  const grandTotal = categoryTotals.reduce((sum, c) => sum + c.netOverallTotal, 0);
+  const sharedCategoryTotal = categoryTotals.reduce((sum, c) => sum + c.netOverallTotal, 0);
 
-  const perMemberShare = memberCount > 0 ? grandTotal / memberCount : 0;
-  const roundedShare = Math.round(perMemberShare * 100) / 100;
+  // Every personal expense, per member, regardless of whether it's linked to
+  // a category (if it IS linked, it was already subtracted from that
+  // category above - here we add it back, but only to that member's own total).
+  const personalTotalsAgg = await PersonalExpense.aggregate([
+    { $match: { user: { $in: activeMembers.map((m) => m._id) } } },
+    { $group: { _id: '$user', total: { $sum: '$price' } } },
+  ]);
+  const personalTotalMap = {};
+  personalTotalsAgg.forEach((p) => {
+    personalTotalMap[p._id.toString()] = p.total;
+  });
+  const grandPersonalTotal = Object.values(personalTotalMap).reduce((sum, v) => sum + v, 0);
+
+  const grandTotal = sharedCategoryTotal + grandPersonalTotal;
 
   // Sum payments already made by each active member, so we can show
   // how much of their share is still due (or overpaid).
@@ -160,13 +204,23 @@ const getDashboardSummary = async () => {
   });
 
   const memberShares = activeMembers.map((m) => {
-    const totalPaid = Math.round((paidMap[m._id.toString()] || 0) * 100) / 100;
-    const balanceDue = Math.round((roundedShare - totalPaid) * 100) / 100;
+    const idStr = m._id.toString();
+    const categoryShare = Math.round((categoryShareByMember[idStr] || 0) * 100) / 100;
+    const personalTotal = Math.round((personalTotalMap[idStr] || 0) * 100) / 100;
+    const share = Math.round((categoryShare + personalTotal) * 100) / 100;
+    const totalPaid = Math.round((paidMap[idStr] || 0) * 100) / 100;
+    const balanceDue = Math.round((share - totalPaid) * 100) / 100;
+
     return {
       userId: m._id,
       name: m.name,
       email: m.email,
-      share: roundedShare,
+      // This member's share of shared/split categories they're included in
+      categoryShare,
+      // This member's own personal expenses (added fully to their own total)
+      personalTotal,
+      // categoryShare + personalTotal = what this member owes in total
+      share,
       totalPaid,
       // Positive = still owes this amount, Negative = has overpaid (credit)
       balanceDue,
@@ -175,9 +229,10 @@ const getDashboardSummary = async () => {
 
   return {
     grandTotal: Math.round(grandTotal * 100) / 100,
+    sharedCategoryTotal: Math.round(sharedCategoryTotal * 100) / 100,
+    grandPersonalTotal: Math.round(grandPersonalTotal * 100) / 100,
     categoryTotals,
     activeMemberCount: memberCount,
-    perMemberShare: roundedShare,
     memberShares,
   };
 };
@@ -186,6 +241,7 @@ module.exports = {
   getDateRanges,
   getCategoryTotals,
   getCategoryPersonalDeductions,
+  getIncludedMembersForCategory,
   getExpensesGroupedByDate,
   getDashboardSummary,
 };

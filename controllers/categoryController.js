@@ -6,21 +6,30 @@ const { sendResponse } = require('../utils/apiResponse');
 const {
   getCategoryTotals,
   getCategoryPersonalDeductions,
+  getIncludedMembersForCategory,
   getExpensesGroupedByDate,
 } = require('../services/dashboardService');
 
 // Builds the full totals block for one category: raw totals, personal-expense
-// deduction, net totals, and the equal per-member split of the net overall total.
-const buildCategoryTotalsBlock = async (categoryId, memberCount) => {
-  const totals = await getCategoryTotals(categoryId);
-  const deductions = await getCategoryPersonalDeductions(categoryId);
+// deduction, net totals, and the equal per-member split of the net overall
+// total among only the members INCLUDED in this category (exclusions respected).
+const buildCategoryTotalsBlock = async (category, activeMembers) => {
+  const totals = await getCategoryTotals(category._id);
+  const deductions = await getCategoryPersonalDeductions(category._id);
 
   const netDailyTotal = Math.max(0, totals.dailyTotal - deductions.dailyDeduction);
   const netMonthlyTotal = Math.max(0, totals.monthlyTotal - deductions.monthlyDeduction);
   const netOverallTotal = Math.max(0, totals.overallTotal - deductions.overallDeduction);
 
+  const includedMembers = getIncludedMembersForCategory(category, activeMembers);
+  const excludedMembers = activeMembers.filter(
+    (m) => !includedMembers.some((im) => im._id.toString() === m._id.toString())
+  );
+
   const perMemberShare =
-    memberCount > 0 ? Math.round((netOverallTotal / memberCount) * 100) / 100 : 0;
+    includedMembers.length > 0
+      ? Math.round((netOverallTotal / includedMembers.length) * 100) / 100
+      : 0;
 
   return {
     dailyTotal: totals.dailyTotal,
@@ -31,6 +40,8 @@ const buildCategoryTotalsBlock = async (categoryId, memberCount) => {
     netMonthlyTotal,
     netOverallTotal,
     perMemberShare,
+    includedMembers: includedMembers.map((m) => ({ userId: m._id, name: m.name })),
+    excludedMembers: excludedMembers.map((m) => ({ userId: m._id, name: m.name })),
   };
 };
 
@@ -39,11 +50,11 @@ const buildCategoryTotalsBlock = async (categoryId, memberCount) => {
 // @access  Private
 const getCategories = asyncHandler(async (req, res) => {
   const categories = await Category.find().sort({ createdAt: -1 });
-  const memberCount = await User.countDocuments({ isActive: true });
+  const activeMembers = await User.find({ isActive: true }).select('name email');
 
   const withTotals = await Promise.all(
     categories.map(async (cat) => {
-      const totals = await buildCategoryTotalsBlock(cat._id, memberCount);
+      const totals = await buildCategoryTotalsBlock(cat, activeMembers);
       return {
         _id: cat._id,
         name: cat.name,
@@ -66,8 +77,8 @@ const getCategoryById = asyncHandler(async (req, res) => {
     return sendResponse(res, 404, false, 'Category not found');
   }
 
-  const memberCount = await User.countDocuments({ isActive: true });
-  const totals = await buildCategoryTotalsBlock(category._id, memberCount);
+  const activeMembers = await User.find({ isActive: true }).select('name email');
+  const totals = await buildCategoryTotalsBlock(category, activeMembers);
   const groupedExpenses = await getExpensesGroupedByDate(category._id);
 
   return sendResponse(res, 200, true, 'Category fetched', {
@@ -151,10 +162,56 @@ const deleteCategory = asyncHandler(async (req, res) => {
   return sendResponse(res, 200, true, 'Category deleted');
 });
 
+// @desc    Remove (exclude) a member from this category's split - the
+//          category's total will then only divide among remaining members.
+// @route   PUT /api/categories/:id/exclude-member
+// @access  Private/Admin
+const excludeMember = asyncHandler(async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return sendResponse(res, 400, false, 'userId is required');
+  }
+
+  const category = await Category.findById(req.params.id);
+  if (!category) {
+    return sendResponse(res, 404, false, 'Category not found');
+  }
+
+  const alreadyExcluded = category.excludedMembers.some((id) => id.toString() === userId);
+  if (!alreadyExcluded) {
+    category.excludedMembers.push(userId);
+    await category.save();
+  }
+
+  return sendResponse(res, 200, true, 'Member removed from this category\'s split', category);
+});
+
+// @desc    Add a previously-excluded member back into this category's split.
+// @route   PUT /api/categories/:id/include-member
+// @access  Private/Admin
+const includeMember = asyncHandler(async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return sendResponse(res, 400, false, 'userId is required');
+  }
+
+  const category = await Category.findById(req.params.id);
+  if (!category) {
+    return sendResponse(res, 404, false, 'Category not found');
+  }
+
+  category.excludedMembers = category.excludedMembers.filter((id) => id.toString() !== userId);
+  await category.save();
+
+  return sendResponse(res, 200, true, 'Member added back into this category\'s split', category);
+});
+
 module.exports = {
   getCategories,
   getCategoryById,
   createCategory,
   updateCategory,
   deleteCategory,
+  excludeMember,
+  includeMember,
 };

@@ -24,6 +24,8 @@ const createArchive = asyncHandler(async (req, res) => {
     month,
     year,
     grandTotal: summary.grandTotal,
+    sharedCategoryTotal: summary.sharedCategoryTotal,
+    grandPersonalTotal: summary.grandPersonalTotal,
     categoryTotals: summary.categoryTotals.map((c) => ({
       category: c.categoryId,
       categoryName: c.categoryName,
@@ -31,10 +33,14 @@ const createArchive = asyncHandler(async (req, res) => {
       personalDeduction: c.personalDeduction,
       netTotal: c.netOverallTotal,
       perMemberShare: c.perMemberShare,
+      includedMemberNames: c.includedMembers.map((m) => m.name),
+      excludedMemberNames: c.excludedMembers.map((m) => m.name),
     })),
     memberShares: summary.memberShares.map((m) => ({
       user: m.userId,
       userName: m.name,
+      categoryShare: m.categoryShare,
+      personalTotal: m.personalTotal,
       share: m.share,
       totalPaid: m.totalPaid,
       balanceDue: m.balanceDue,
