@@ -5,21 +5,16 @@ const User = require('../models/User');
 const { sendResponse } = require('../utils/apiResponse');
 const {
   getCategoryTotals,
-  getCategoryPersonalDeductions,
   getIncludedMembersForCategory,
   getExpensesGroupedByDate,
 } = require('../services/dashboardService');
 
-// Builds the full totals block for one category: raw totals, personal-expense
-// deduction, net totals, and the equal per-member split of the net overall
-// total among only the members INCLUDED in this category (exclusions respected).
+// Builds the full totals block for one category: raw daily/monthly/overall
+// totals, and the equal per-member split of the overall total among only the
+// members INCLUDED in this category (exclusions respected). Personal expenses
+// are a separate ledger and never affect these numbers.
 const buildCategoryTotalsBlock = async (category, activeMembers) => {
   const totals = await getCategoryTotals(category._id);
-  const deductions = await getCategoryPersonalDeductions(category._id);
-
-  const netDailyTotal = Math.max(0, totals.dailyTotal - deductions.dailyDeduction);
-  const netMonthlyTotal = Math.max(0, totals.monthlyTotal - deductions.monthlyDeduction);
-  const netOverallTotal = Math.max(0, totals.overallTotal - deductions.overallDeduction);
 
   const includedMembers = getIncludedMembersForCategory(category, activeMembers);
   const excludedMembers = activeMembers.filter(
@@ -28,17 +23,13 @@ const buildCategoryTotalsBlock = async (category, activeMembers) => {
 
   const perMemberShare =
     includedMembers.length > 0
-      ? Math.round((netOverallTotal / includedMembers.length) * 100) / 100
+      ? Math.round((totals.overallTotal / includedMembers.length) * 100) / 100
       : 0;
 
   return {
     dailyTotal: totals.dailyTotal,
     monthlyTotal: totals.monthlyTotal,
     overallTotal: totals.overallTotal,
-    personalDeduction: deductions.overallDeduction,
-    netDailyTotal,
-    netMonthlyTotal,
-    netOverallTotal,
     perMemberShare,
     includedMembers: includedMembers.map((m) => ({ userId: m._id, name: m.name })),
     excludedMembers: excludedMembers.map((m) => ({ userId: m._id, name: m.name })),

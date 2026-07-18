@@ -7,14 +7,15 @@ const {
   updateExpense,
   deleteExpense,
 } = require('../controllers/expenseController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, adminOnly } = require('../middleware/authMiddleware');
 
-router.route('/').get(protect, getExpenses).post(protect, createExpense);
+// Only the admin manages category (shared) expenses - members can view them.
+router.route('/').get(protect, getExpenses).post(protect, adminOnly, createExpense);
 
 router
   .route('/:id')
   .get(protect, getExpenseById)
-  .put(protect, updateExpense)
-  .delete(protect, deleteExpense);
+  .put(protect, adminOnly, updateExpense)
+  .delete(protect, adminOnly, deleteExpense);
 
 module.exports = router;

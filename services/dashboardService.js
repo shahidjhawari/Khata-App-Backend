@@ -48,32 +48,12 @@ const getCategoryTotals = async (categoryId) => {
 };
 
 /**
- * Sums personal expenses tagged to a category, in the same daily/monthly/overall
- * ranges as getCategoryTotals, so they can be subtracted before splitting.
+ * Given a category document and the full list of active members, returns
+ * only the members who are NOT excluded from this category's split.
  */
-const getCategoryPersonalDeductions = async (categoryId) => {
-  const { startOfToday, endOfToday, startOfMonth, endOfMonth } = getDateRanges();
-
-  const [dailyAgg, monthlyAgg, overallAgg] = await Promise.all([
-    PersonalExpense.aggregate([
-      { $match: { category: categoryId, date: { $gte: startOfToday, $lte: endOfToday } } },
-      { $group: { _id: null, total: { $sum: '$price' } } },
-    ]),
-    PersonalExpense.aggregate([
-      { $match: { category: categoryId, date: { $gte: startOfMonth, $lte: endOfMonth } } },
-      { $group: { _id: null, total: { $sum: '$price' } } },
-    ]),
-    PersonalExpense.aggregate([
-      { $match: { category: categoryId } },
-      { $group: { _id: null, total: { $sum: '$price' } } },
-    ]),
-  ]);
-
-  return {
-    dailyDeduction: dailyAgg[0]?.total || 0,
-    monthlyDeduction: monthlyAgg[0]?.total || 0,
-    overallDeduction: overallAgg[0]?.total || 0,
-  };
+const getIncludedMembersForCategory = (category, activeMembers) => {
+  const excludedIds = new Set((category.excludedMembers || []).map((id) => id.toString()));
+  return activeMembers.filter((m) => !excludedIds.has(m._id.toString()));
 };
 
 /**
@@ -98,23 +78,15 @@ const getExpensesGroupedByDate = async (categoryId) => {
 };
 
 /**
- * Given a category document and the full list of active members, returns
- * only the members who are NOT excluded from this category's split.
- */
-const getIncludedMembersForCategory = (category, activeMembers) => {
-  const excludedIds = new Set((category.excludedMembers || []).map((id) => id.toString()));
-  return activeMembers.filter((m) => !excludedIds.has(m._id.toString()));
-};
-
-/**
- * Grand Total = (sum of NET category totals that get shared/split) +
+ * Grand Total = (sum of category totals that get shared/split) +
  *               (sum of ALL personal expenses, across every member).
- * - Each category's net total is divided ONLY among the members who are NOT
+ * - Each category's total is divided ONLY among the members who are NOT
  *   excluded from that category (excludedMembers on the Category doc).
- * - Personal expenses are NEVER divided among others - the amount is added
- *   entirely to the member who spent it, both in their own "share" total
- *   and in the overall Grand Total (so Grand Total reflects everything the
- *   household has actually spent, shared + personal combined).
+ * - Personal expenses are a completely SEPARATE ledger: they never reduce
+ *   or otherwise touch any category's shared total. The amount is added
+ *   entirely to the member who spent it (their own "personalTotal"), and
+ *   also counted once into the overall Grand Total - never both places at
+ *   once, so there's no double-counting.
  * This is recalculated live on every call - always reflects current DB state.
  */
 const getDashboardSummary = async () => {
@@ -131,13 +103,6 @@ const getDashboardSummary = async () => {
   const categoryTotals = await Promise.all(
     categories.map(async (cat) => {
       const totals = await getCategoryTotals(cat._id);
-      const deductions = await getCategoryPersonalDeductions(cat._id);
-
-      // Personal expenses tagged to this category are covered by the member
-      // who spent them, so they come out of the shared pool before splitting.
-      const netDailyTotal = Math.max(0, totals.dailyTotal - deductions.dailyDeduction);
-      const netMonthlyTotal = Math.max(0, totals.monthlyTotal - deductions.monthlyDeduction);
-      const netOverallTotal = Math.max(0, totals.overallTotal - deductions.overallDeduction);
 
       const includedMembers = getIncludedMembersForCategory(cat, activeMembers);
       const excludedMembers = activeMembers.filter(
@@ -146,7 +111,7 @@ const getDashboardSummary = async () => {
 
       const perMemberShare =
         includedMembers.length > 0
-          ? Math.round((netOverallTotal / includedMembers.length) * 100) / 100
+          ? Math.round((totals.overallTotal / includedMembers.length) * 100) / 100
           : 0;
 
       // Accumulate this category's share into each included member's running total
@@ -157,17 +122,10 @@ const getDashboardSummary = async () => {
       return {
         categoryId: cat._id,
         categoryName: cat.name,
-        // Raw totals before any personal-expense deduction
         dailyTotal: totals.dailyTotal,
         monthlyTotal: totals.monthlyTotal,
         overallTotal: totals.overallTotal,
-        // How much of this category was already personally covered
-        personalDeduction: deductions.overallDeduction,
-        // What's actually left to split among included members
-        netDailyTotal,
-        netMonthlyTotal,
-        netOverallTotal,
-        // This category's net total, split equally among INCLUDED members only
+        // This category's total, split equally among INCLUDED members only
         perMemberShare,
         includedMembers: includedMembers.map((m) => ({ userId: m._id, name: m.name })),
         excludedMembers: excludedMembers.map((m) => ({ userId: m._id, name: m.name })),
@@ -175,11 +133,11 @@ const getDashboardSummary = async () => {
     })
   );
 
-  const sharedCategoryTotal = categoryTotals.reduce((sum, c) => sum + c.netOverallTotal, 0);
+  const sharedCategoryTotal = categoryTotals.reduce((sum, c) => sum + c.overallTotal, 0);
 
-  // Every personal expense, per member, regardless of whether it's linked to
-  // a category (if it IS linked, it was already subtracted from that
-  // category above - here we add it back, but only to that member's own total).
+  // Every personal expense, per member - a fully separate ledger from
+  // category expenses. Never subtracted from any category, never divided
+  // among other members - counted once, only against the member who spent it.
   const personalTotalsAgg = await PersonalExpense.aggregate([
     { $match: { user: { $in: activeMembers.map((m) => m._id) } } },
     { $group: { _id: '$user', total: { $sum: '$price' } } },
@@ -215,9 +173,9 @@ const getDashboardSummary = async () => {
       userId: m._id,
       name: m.name,
       email: m.email,
-      // This member's share of shared/split categories they're included in
+      // This member's share of shared categories they're included in
       categoryShare,
-      // This member's own personal expenses (added fully to their own total)
+      // This member's own personal expenses (their own separate ledger)
       personalTotal,
       // categoryShare + personalTotal = what this member owes in total
       share,
@@ -240,7 +198,6 @@ const getDashboardSummary = async () => {
 module.exports = {
   getDateRanges,
   getCategoryTotals,
-  getCategoryPersonalDeductions,
   getIncludedMembersForCategory,
   getExpensesGroupedByDate,
   getDashboardSummary,

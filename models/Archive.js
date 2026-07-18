@@ -20,9 +20,7 @@ const archiveSchema = new mongoose.Schema(
       {
         category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
         categoryName: String,
-        total: Number, // raw overall total before deduction
-        personalDeduction: Number,
-        netTotal: Number, // total actually split among included members
+        total: Number,
         perMemberShare: Number,
         includedMemberNames: [String],
         excludedMemberNames: [String],
